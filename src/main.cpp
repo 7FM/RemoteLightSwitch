@@ -3,12 +3,20 @@
 // Enable this if you need to setup this project with a new remote
 // #define FIND_DECODER_AND_TRIGGER_VALUE
 
+// Enable this to find the desired servo degree settings
+// #define FIND_SERVO_POSITIONS
+#define SERVO_FIND_POS_INC 10
+
+// Enable this to find the desired servo pulse width for the widest possible movement range
+// #define FIND_SERVO_PULSE_WIDTHS
+#define SERVO_FIND_PULSE_WIDTH_INC 50
+
 // I only need this decoder!
 #ifndef FIND_DECODER_AND_TRIGGER_VALUE
 #define DECODE_NEC
 #define NO_LED_FEEDBACK_CODE
 #endif
-#include <IRremote.hpp>
+#include <IRremote.hpp> // uses timer 2
 
 // PIN configuration:
 // TODO improve layout to keep all pins on one side (combined with power & gnd pins)
@@ -17,22 +25,15 @@
 
 // IR Remote configuration:
 // The expected decodedRawData to use as trigger!
-// TODO set different values
-#define IR_TURN_ON_TRIGGER_VALUE 0xFF00FF1F
-#define IR_TURN_OFF_TRIGGER_VALUE 0xFF00FF1F
+#define IR_TURN_ON_TRIGGER_VALUE 0xF30CFF1F
+#define IR_TURN_OFF_TRIGGER_VALUE 0xEF10FF1F
 
 // Servo configuration:
-// TODO fine tune for a better servo range!
 #define SERVO_MIN_PULSE_WIDTH 1000
 #define SERVO_MAX_PULSE_WIDTH 2000
-// TODO determine
 #define SERVO_NEUTRAL_POS 90
 #define SERVO_SWITCH_ON_POS 0
 #define SERVO_SWITCH_OFF_POS 180
-
-// TODO create configuration program to determine the desired servo positions
-// #define FIND_SERVO_POSITIONS
-// #define FIND_SERVO_PULSE_WIDTHS
 
 #define CASE_STRINGIFY(x)   \
     case x:                 \
@@ -40,8 +41,7 @@
         break
 
 #ifndef FIND_DECODER_AND_TRIGGER_VALUE
-//TODO check that the servo & the ir remote libary use different timers!
-#include <Servo.h>
+#include <Servo.h> // uses Timer 1
 static Servo servo;
 
 static void moveToPos(uint8_t pos) {
@@ -57,15 +57,15 @@ static void returnToNeutral() {
 
 static void triggerSwitch(uint8_t pos) {
     moveToPos(pos);
+    delay(500);
     returnToNeutral();
 }
 
-static void setupServo() {
+static void initServo(uint16_t minPulseWidth = SERVO_MIN_PULSE_WIDTH, uint16_t maxPulseWidth = SERVO_MAX_PULSE_WIDTH) {
     if (servo.attached()) {
         servo.detach();
     }
-    servo.attach(SERVO_PIN, SERVO_MIN_PULSE_WIDTH, SERVO_MAX_PULSE_WIDTH);
-    returnToNeutral();
+    servo.attach(SERVO_PIN, minPulseWidth, maxPulseWidth);
 }
 #endif
 
@@ -92,6 +92,7 @@ void setup() {
                 rawData = key_value;
             }
             key_value = rawData;
+            Serial.print("0x");
             Serial.println(rawData, HEX);
             switch (data->protocol) {
                 CASE_STRINGIFY(PULSE_DISTANCE);
@@ -126,12 +127,58 @@ void setup() {
         }
     }
 #else
-    setupServo();
+    initServo();
+    returnToNeutral();
 
 #ifdef FIND_SERVO_POSITIONS
-// TODO
+    uint8_t servoPos = SERVO_NEUTRAL_POS;
+    for (;;) {
+        if (IRData *data = IrReceiver.read()) {
+            // TODO use command and address instead?
+            auto rawData = data->decodedRawData;
+            uint8_t oldPos = servoPos;
+            if (rawData == IR_TURN_ON_TRIGGER_VALUE) {
+                servoPos += SERVO_FIND_POS_INC;
+            } else if (rawData == IR_TURN_OFF_TRIGGER_VALUE) {
+                servoPos -= SERVO_FIND_POS_INC;
+            }
+
+            if (oldPos != servoPos) {
+                Serial.print("Current servo position: ");
+                Serial.println(servoPos);
+                moveToPos(servoPos);
+            }
+            IrReceiver.resume();
+        }
+    }
+
 #elif defined(FIND_SERVO_PULSE_WIDTHS)
-// TODO
+    uint16_t minPulseWidth = SERVO_MIN_PULSE_WIDTH;
+    uint16_t maxPulseWidth = SERVO_MAX_PULSE_WIDTH;
+    for (;;) {
+        if (IRData *data = IrReceiver.read()) {
+            // TODO use command and address instead?
+            auto rawData = data->decodedRawData;
+            uint8_t targetPos = SERVO_NEUTRAL_POS;
+            if (rawData == IR_TURN_ON_TRIGGER_VALUE) {
+                maxPulseWidth += SERVO_FIND_PULSE_WIDTH_INC;
+                targetPos = SERVO_SWITCH_ON_POS;
+            } else if (rawData == IR_TURN_OFF_TRIGGER_VALUE) {
+                minPulseWidth -= SERVO_FIND_PULSE_WIDTH_INC;
+                targetPos = SERVO_SWITCH_OFF_POS;
+            }
+
+            if (targetPos != SERVO_NEUTRAL_POS) {
+                Serial.print("New values: min: ");
+                Serial.print(minPulseWidth);
+                Serial.print(" max: ");
+                Serial.println(maxPulseWidth);
+                initServo(minPulseWidth, maxPulseWidth);
+                moveToPos(targetPos);
+            }
+            IrReceiver.resume();
+        }
+    }
 #else
     for (;;) {
         if (IRData *data = IrReceiver.read()) {
@@ -143,6 +190,7 @@ void setup() {
                 triggerSwitch(SERVO_SWITCH_OFF_POS);
             }
             // Else ignore the data
+            IrReceiver.resume();
         }
     }
 #endif
@@ -150,5 +198,5 @@ void setup() {
 }
 
 void loop() {
-    //TODO we might want to move our main loops here
+    // TODO we might want to move our main loops here
 }
